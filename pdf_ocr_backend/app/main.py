@@ -1,6 +1,6 @@
 import logging
 import uuid
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 import pyocr
@@ -208,16 +208,16 @@ async def healthz():
 async def root():
     return {"message": "PDF OCR API (Async Support)"}
 
-@app.post("/ocr-pdf")
+@app.post("/ocr-pdf", summary="PDF OCR処理の予約", response_description="発行されたジョブIDと受付ステータス")
 async def ocr_pdf(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    language: str = "jpn",
-    ocr_level: int = 4
+    file: UploadFile = File(..., description="OCR処理を行いたいPDFファイル"),
+    language: str = Query("jpn", description="OCRに使用する言語コード (例: jpn, eng, jpn+eng)"),
+    ocr_level: int = Query(4, ge=1, le=5, description="抽出するデータの粒度 (1:ページ, 2:ブロック, 3:段落, 4:行, 5:単語)")
 ):
     """
-    【注文口】PDFを受け取り、すぐに受付番号(Job ID)を返します。
-    ocr_level: 1:Page, 2:Block, 3:Paragraph, 4:Line, 5:Word
+    PDFを受け取り、バックグラウンドでのOCR処理を開始してジョブIDを返します。
+    処理の進捗確認や結果の取得には、返却された `job_id` を使用してください。
     """
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="PDFファイルのみ対応しています")
@@ -245,20 +245,24 @@ async def ocr_pdf(
     # 4. 「受付完了」を即座に返す
     return {"job_id": job_id, "status": "accepted"}
 
-@app.get("/ocr-status/{job_id}")
-async def get_status(job_id: str):
+@app.get("/ocr-status/{job_id}", summary="処理状況の確認")
+async def get_status(
+    job_id: str = Path(..., description="発行されたジョブID")
+):
     """
-    【確認口】「私の番号、今どうなってる？」と聞くための場所。
+    指定されたジョブIDの現在のステータス（進行中、完了、失敗など）と進捗率を取得します。
     """
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="仕事が見つかりません。IDが正しいか確認してください。")
     
     return jobs[job_id]
 
-@app.get("/download/{job_id}")
-async def download_result(job_id: str):
+@app.get("/download/{job_id}", summary="検索可能PDFのダウンロード")
+async def download_result(
+    job_id: str = Path(..., description="発行されたジョブID")
+):
     """
-    【受取口】完了したPDFをダウンロードするための場所。
+    OCR処理が完了した後、テキストレイヤーが埋め込まれた検索可能なPDFファイルをダウンロードします。
     """
     job = jobs.get(job_id)
     if not job or job["status"] != "completed":
@@ -270,10 +274,12 @@ async def download_result(job_id: str):
         filename=f"searchable_{job['filename']}"
     )
 
-@app.get("/ocr-result-json/{job_id}")
-async def get_ocr_result_json(job_id: str):
+@app.get("/ocr-result-json/{job_id}", summary="構造化JSONデータの取得")
+async def get_ocr_result_json(
+    job_id: str = Path(..., description="発行されたジョブID")
+):
     """
-    【受取口】完了したOCR構造化データをJSONで取得するための場所。
+    OCR処理が完了した後、各ページのテキスト・座標・信頼度を含む構造化されたJSONデータを取得します。
     """
     job = jobs.get(job_id)
     if not job or job["status"] != "completed":
