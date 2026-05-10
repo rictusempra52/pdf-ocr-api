@@ -19,11 +19,11 @@ curl -s "$API_URL/" | jq .
 echo ""
 
 echo "3. サンプルPDFファイルをダウンロード..."
-if [ ! -f "test_sample.pdf" ]; then
-    wget -q -O test_sample.pdf "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
-    echo "✓ test_sample.pdf をダウンロードしました"
+if [ ! -f "集成第一マンション.pdf" ]; then
+    wget -q -O 集成第一マンション.pdf "http://www.0359370391.com/list/2020102900020/file_contents/3.pdf"
+    echo "✓ 集成第一マンション.pdf をダウンロードしました"
 else
-    echo "✓ test_sample.pdf は既に存在します"
+    echo "✓ 集成第一マンション.pdf は既に存在します"
 fi
 echo ""
 
