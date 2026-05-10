@@ -28,10 +28,24 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="PDF OCR API", description="Convert scanned PDFs to searchable PDFs using OCR")
 
-# CORS（他のWebアプリから接続できるようにする設定）
+# --- 2. CORS設定（セキュリティ） ---
+
+# 環境変数から許可するURLを取得します（カンマ区切りで複数指定可能）
+# 例: ALLOWED_ORIGINS=http://localhost:3000,https://my-app.vercel.app
+allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "*")
+
+# "*"（すべて許可）でない場合は、カンマで分割してリストにします
+if allowed_origins_raw == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [origin.strip() for origin in allowed_origins_raw.split(",")]
+
+logger.info(f"CORS許可設定: {allow_origins}")
+
+# CORS設定（他のWebアプリから接続できるようにする設定）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allow_origins,  # 許可されたURLのリストを適用
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
