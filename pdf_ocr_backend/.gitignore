@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.env
+
+# OCR results and temporary storage
+storage/
+tmp/
+
+# IDE files
+.vscode/
+.idea/

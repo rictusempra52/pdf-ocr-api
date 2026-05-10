@@ -10,7 +10,10 @@ import subprocess
 import os
 import tempfile
 import shutil
+import json
+import csv
 from pathlib import Path
+from PIL import Image
 
 # --- 1. 準備：ログと進捗管理の設定 ---
 
@@ -22,8 +25,8 @@ logger = logging.getLogger(__name__)
 # 構造: jobs[job_id] = {"status": "進行中", "progress": 50, "result_file": "path", "filename": "..."}
 jobs = {}
 
-# 完成したファイルを一時保存する場所
-RESULTS_DIR = Path(tempfile.gettempdir()) / "ocr_results"
+# 完成したファイルを一時保存する場所（コンテナ内の永続ディレクトリを想定）
+RESULTS_DIR = Path("/app/storage/ocr_results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="PDF OCR API", description="Convert scanned PDFs to searchable PDFs using OCR")
@@ -51,7 +54,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 2. バックグラウンドで行う重い処理（OCR本体） ---
+# --- 3. ユーティリティ関数 ---
+
+def parse_tsv(tsv_path: Path):
+    """
+    TesseractのTSVファイルを解析して単語ごとのリストを返します。
+    TSVの構造: level, page_num, block_num, par_num, line_num, word_num, left, top, width, height, conf, text
+    """
+    words = []
+    if not tsv_path.exists():
+        return words
+
+    with open(tsv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter='\t', quoting=csv.QUOTE_NONE)
+        for row in reader:
+            # level 5 が「単語」を指します
+            if row.get('level') == '5':
+                text = row.get('text', '').strip()
+                # 空文字でない場合のみ追加
+                if text:
+                    try:
+                        words.append({
+                            "text": text,
+                            "confidence": int(float(row.get('conf', 0))),
+                            "bbox": {
+                                "left": int(row.get('left', 0)),
+                                "top": int(row.get('top', 0)),
+                                "width": int(row.get('width', 0)),
+                                "height": int(row.get('height', 0))
+                            }
+                        })
+                    except (ValueError, TypeError):
+                        continue
+    return words
+
+# --- 4. バックグラウンドで行う重い処理（OCR本体） ---
 
 def run_ocr_task(job_id: str, temp_dir: str, pdf_path: Path, language: str, original_filename: str):
     """
@@ -80,11 +117,16 @@ def run_ocr_task(job_id: str, temp_dir: str, pdf_path: Path, language: str, orig
         
         total_pages = len(image_paths)
         textonly_pdfs = []
+        structured_pages = []
         
         # 1ページずつOCRを実行
         for i, img_path in enumerate(image_paths):
             page_num = i + 1
             
+            # 画像サイズを取得
+            with Image.open(img_path) as img:
+                width, height = img.size
+
             # ノートの進捗率を更新
             progress_percent = int((i / total_pages) * 100)
             jobs[job_id]["progress"] = progress_percent
@@ -92,18 +134,29 @@ def run_ocr_task(job_id: str, temp_dir: str, pdf_path: Path, language: str, orig
             
             page_base = Path(temp_dir) / f"page_{page_num}"
             page_pdf = Path(temp_dir) / f"page_{page_num}.pdf"
+            page_tsv = Path(temp_dir) / f"page_{page_num}.tsv"
             
+            # tsv と pdf の両方を出力
             cmd = [
                 "tesseract",
                 "-c", "textonly_pdf=1",
                 str(img_path),
                 str(page_base),
                 "-l", language,
-                "pdf"
+                "pdf", "tsv"
             ]
             
             subprocess.run(cmd, check=True)
             textonly_pdfs.append(str(page_pdf))
+            
+            # TSVを解析して構造化データに追加
+            page_words = parse_tsv(page_tsv)
+            structured_pages.append({
+                "page_number": page_num,
+                "width": width,
+                "height": height,
+                "words": page_words
+            })
             
         logger.info(f"[{job_id}] 全ページのOCRが完了。結合中...")
         
@@ -111,17 +164,29 @@ def run_ocr_task(job_id: str, temp_dir: str, pdf_path: Path, language: str, orig
         combined_text_pdf = Path(temp_dir) / "combined.pdf"
         subprocess.run(["qpdf", "--empty", "--pages"] + textonly_pdfs + ["--", str(combined_text_pdf)], check=True)
         
-        final_output_path = RESULTS_DIR / f"{job_id}.pdf"
+        final_pdf_path = RESULTS_DIR / f"{job_id}.pdf"
         subprocess.run([
             "qpdf", "--overlay", str(combined_text_pdf), "--", 
-            str(pdf_path), str(final_output_path)
+            str(pdf_path), str(final_pdf_path)
         ], check=True)
+
+        # 構造化JSONを保存
+        final_json_data = {
+            "job_id": job_id,
+            "filename": original_filename,
+            "total_pages": total_pages,
+            "pages": structured_pages
+        }
+        final_json_path = RESULTS_DIR / f"{job_id}.json"
+        with open(final_json_path, "w", encoding="utf-8") as f:
+            json.dump(final_json_data, f, ensure_ascii=False, indent=2)
         
-        # ノートを「完了」に書き換える
+        # ノートを「完了」に書き換える（巨大なデータは持たずファイルパスのみ保持）
         jobs[job_id].update({
             "status": "completed",
             "progress": 100,
-            "result_file": str(final_output_path)
+            "result_file": str(final_pdf_path),
+            "result_json": str(final_json_path)
         })
         logger.info(f"[{job_id}] 全ての処理が完了しました。")
         
@@ -200,3 +265,22 @@ async def download_result(job_id: str):
         media_type="application/pdf",
         filename=f"searchable_{job['filename']}"
     )
+
+@app.get("/ocr-result-json/{job_id}")
+async def get_ocr_result_json(job_id: str):
+    """
+    【受取口】完了したOCR構造化データをJSONで取得するための場所。
+    """
+    job = jobs.get(job_id)
+    if not job or job["status"] != "completed":
+        raise HTTPException(status_code=400, detail="まだ処理が完了していないか、IDが正しくありません。")
+    
+    json_path = Path(job["result_json"])
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail="JSON結果ファイルが見つかりません。")
+    
+    # ファイルを読み取ってJSONとして返す
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    return data

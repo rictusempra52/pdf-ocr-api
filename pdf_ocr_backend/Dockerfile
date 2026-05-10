@@ -18,6 +18,8 @@ COPY pyproject.toml poetry.lock* ./
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi --no-root
 
+RUN mkdir -p /app/storage && chmod 777 /app/storage
+
 COPY ./app ./app
 
 EXPOSE 8000
