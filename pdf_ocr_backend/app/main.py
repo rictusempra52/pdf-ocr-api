@@ -1,6 +1,6 @@
 import logging
 import uuid
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Query, Path
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Query, Path as FastAPIPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 import pyocr
@@ -280,7 +280,7 @@ async def ocr_pdf(
 
 @app.get("/ocr-status/{job_id}", summary="処理状況の確認")
 async def get_status(
-    job_id: str = Path(..., description="発行されたジョブID")
+    job_id: str = FastAPIPath(..., description="発行されたジョブID")
 ):
     """
     指定されたジョブIDの現在のステータス（進行中、完了、失敗など）と進捗率を取得します。
@@ -292,7 +292,7 @@ async def get_status(
 
 @app.get("/download/{job_id}", summary="検索可能PDFのダウンロード")
 async def download_result(
-    job_id: str = Path(..., description="発行されたジョブID")
+    job_id: str = FastAPIPath(..., description="発行されたジョブID")
 ):
     """
     OCR処理が完了した後、テキストレイヤーが埋め込まれた検索可能なPDFファイルをダウンロードします。
@@ -309,7 +309,7 @@ async def download_result(
 
 @app.get("/ocr-result-json/{job_id}", summary="構造化JSONデータの取得")
 async def get_ocr_result_json(
-    job_id: str = Path(..., description="発行されたジョブID")
+    job_id: str = FastAPIPath(..., description="発行されたジョブID")
 ):
     """
     OCR処理が完了した後、各ページのテキスト・座標・信頼度を含む構造化されたJSONデータを取得します。
