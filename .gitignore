@@ -105,6 +105,7 @@ venv.bak
 # Project specific
 *.pdf
 !pdf_ocr_backend/app/static/*.pdf
+/storage/ocr_results/*
 .DS_Store
 Thumbs.db
 
