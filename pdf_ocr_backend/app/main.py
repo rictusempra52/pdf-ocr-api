@@ -56,41 +56,41 @@ app.add_middleware(
 
 # --- 3. ユーティリティ関数 ---
 
-def parse_tsv(tsv_path: Path):
+def parse_tsv(tsv_path: Path, target_level: int = 4):
     """
-    TesseractのTSVファイルを解析して単語ごとのリストを返します。
-    TSVの構造: level, page_num, block_num, par_num, line_num, word_num, left, top, width, height, conf, text
+    TesseractのTSVファイルを解析して指定されたレベルの項目リストを返します。
+    Level 定義: 1: Page, 2: Block, 3: Paragraph, 4: Line, 5: Word
     """
-    words = []
+    items = []
     if not tsv_path.exists():
-        return words
+        return items
 
     with open(tsv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter='\t', quoting=csv.QUOTE_NONE)
         for row in reader:
-            # level 5 が「単語」を指します
-            if row.get('level') == '5':
+            # 指定されたレベルと一致する場合のみ抽出
+            if row.get('level') == str(target_level):
                 text = row.get('text', '').strip()
-                # 空文字でない場合のみ追加
-                if text:
-                    try:
-                        words.append({
-                            "text": text,
-                            "confidence": int(float(row.get('conf', 0))),
-                            "bbox": {
-                                "left": int(row.get('left', 0)),
-                                "top": int(row.get('top', 0)),
-                                "width": int(row.get('width', 0)),
-                                "height": int(row.get('height', 0))
-                            }
-                        })
-                    except (ValueError, TypeError):
-                        continue
-    return words
+                # ページやブロックなどの上位レベルではtextが空でも座標が必要な場合があるが、
+                # 基本的にテキストがあるもの、または上位構造として追加
+                try:
+                    items.append({
+                        "text": text,
+                        "confidence": int(float(row.get('conf', 0))),
+                        "bbox": {
+                            "left": int(row.get('left', 0)),
+                            "top": int(row.get('top', 0)),
+                            "width": int(row.get('width', 0)),
+                            "height": int(row.get('height', 0))
+                        }
+                    })
+                except (ValueError, TypeError):
+                    continue
+    return items
 
 # --- 4. バックグラウンドで行う重い処理（OCR本体） ---
 
-def run_ocr_task(job_id: str, temp_dir: str, pdf_path: Path, language: str, original_filename: str):
+def run_ocr_task(job_id: str, temp_dir: str, pdf_path: Path, language: str, original_filename: str, ocr_level: int = 4):
     """
     裏側で実行される重い処理（注文ベルが鳴った後に店員がやる作業）
     """
@@ -149,13 +149,14 @@ def run_ocr_task(job_id: str, temp_dir: str, pdf_path: Path, language: str, orig
             subprocess.run(cmd, check=True)
             textonly_pdfs.append(str(page_pdf))
             
-            # TSVを解析して構造化データに追加
-            page_words = parse_tsv(page_tsv)
+            # TSVを解析して構造化データに追加（指定されたレベルで取得）
+            page_items = parse_tsv(page_tsv, target_level=ocr_level)
             structured_pages.append({
                 "page_number": page_num,
                 "width": width,
                 "height": height,
-                "words": page_words
+                "level": ocr_level,
+                "items": page_items
             })
             
         logger.info(f"[{job_id}] 全ページのOCRが完了。結合中...")
@@ -211,10 +212,12 @@ async def root():
 async def ocr_pdf(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    language: str = "jpn"
+    language: str = "jpn",
+    ocr_level: int = 4
 ):
     """
     【注文口】PDFを受け取り、すぐに受付番号(Job ID)を返します。
+    ocr_level: 1:Page, 2:Block, 3:Paragraph, 4:Line, 5:Word
     """
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="PDFファイルのみ対応しています")
@@ -235,7 +238,8 @@ async def ocr_pdf(
         temp_dir, 
         pdf_path, 
         language, 
-        file.filename
+        file.filename,
+        ocr_level
     )
     
     # 4. 「受付完了」を即座に返す
