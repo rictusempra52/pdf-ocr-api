@@ -10,6 +10,12 @@ import tempfile
 import shutil
 from pathlib import Path
 
+import logging
+
+# ログの設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="PDF OCR API", description="Convert scanned PDFs to searchable PDFs using OCR")
 
 # Disable CORS. Do not remove this for full-stack development.
@@ -57,59 +63,80 @@ async def ocr_pdf(
     tool = tools[0]
     
     temp_dir = tempfile.mkdtemp()
+    logger.info(f"作業ディレクトリを作成しました: {temp_dir}")
     
     try:
         pdf_path = Path(temp_dir) / "input.pdf"
         with open(pdf_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        pages = convert_from_path(str(pdf_path), 300)
+        logger.info(f"ファイルを保存しました: {file.filename}")
         
-        tiff_path = Path(temp_dir) / "pages.tif"
-        pages[0].save(
-            str(tiff_path), 
-            "TIFF", 
-            compression="tiff_deflate", 
-            save_all=True, 
-            append_images=pages[1:]
+        # 1ページずつ画像に変換して保存
+        output_images_dir = Path(temp_dir) / "images"
+        output_images_dir.mkdir()
+        
+        logger.info("PDFを画像に変換中...")
+        # メモリ節約のため、ディスクに直接書き出す
+        image_paths = convert_from_path(
+            str(pdf_path), 
+            300, 
+            output_folder=str(output_images_dir),
+            fmt="tiff",
+            paths_only=True
         )
         
-        textonly_pdf_base = Path(temp_dir) / "textonly"
-        textonly_pdf_path = Path(temp_dir) / "textonly.pdf"
+        total_pages = len(image_paths)
+        logger.info(f"全 {total_pages} ページの画像変換が完了しました。")
         
-        cmd = [
-            "tesseract",
-            "-c", 'page_separator=[PAGE SEPARATOR]',
-            "-c", "textonly_pdf=1",
-            str(tiff_path),
-            str(textonly_pdf_base),
-            "-l", language,
-            "pdf"
-        ]
+        textonly_pdfs = []
+        for i, img_path in enumerate(image_paths):
+            page_num = i + 1
+            logger.info(f"[{page_num}/{total_pages}] ページのOCR処理を開始します...")
+            
+            page_base = Path(temp_dir) / f"page_{page_num}"
+            page_pdf = Path(temp_dir) / f"page_{page_num}.pdf"
+            
+            cmd = [
+                "tesseract",
+                "-c", "textonly_pdf=1",
+                str(img_path),
+                str(page_base),
+                "-l", language,
+                "pdf"
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"Tesseract エラー (ページ {page_num}): {result.stderr}")
+                raise HTTPException(status_code=500, detail=f"Tesseract OCR failed on page {page_num}")
+            
+            textonly_pdfs.append(str(page_pdf))
+            
+        logger.info("全ページのOCR処理が完了しました。PDFを結合中...")
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Tesseract OCR failed: {result.stderr}"
-            )
+        # 全てのテキストPDFを1つに結合
+        combined_textonly_pdf = Path(temp_dir) / "combined_textonly.pdf"
+        cmd = ["qpdf", "--empty", "--pages"] + textonly_pdfs + ["--", str(combined_textonly_pdf)]
+        subprocess.run(cmd, check=True)
         
+        # 元のPDFにテキスト層を重ねる
         output_path = Path(temp_dir) / "output.pdf"
-        
         cmd = [
             "qpdf",
-            "--overlay", str(textonly_pdf_path),
+            "--overlay", str(combined_textonly_pdf),
             "--",
             str(pdf_path),
             str(output_path)
         ]
         
+        logger.info("最終的なPDFを作成中...")
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"qpdf overlay failed: {result.stderr}"
-            )
+            logger.error(f"qpdf エラー: {result.stderr}")
+            raise HTTPException(status_code=500, detail="qpdf overlay failed")
+        
+        logger.info("処理が正常に完了しました。ファイルを送信します。")
         
         return FileResponse(
             path=str(output_path),
@@ -119,7 +146,10 @@ async def ocr_pdf(
         )
         
     except Exception as e:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.exception("予期しないエラーが発生しました")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        # 非同期で削除するとエラーになることがあるため、ここでは何もしないか、
+        # 必要に応じて定期的なクリーンアップジョブを検討する。
+        # (FileResponseがファイルを読み終わる前に削除してはいけないため)
         pass
