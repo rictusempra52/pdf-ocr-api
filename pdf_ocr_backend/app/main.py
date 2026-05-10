@@ -59,33 +59,66 @@ app.add_middleware(
 def parse_tsv(tsv_path: Path, target_level: int = 4):
     """
     TesseractのTSVファイルを解析して指定されたレベルの項目リストを返します。
-    Level 定義: 1: Page, 2: Block, 3: Paragraph, 4: Line, 5: Word
+    上位レベル(1-4)が指定された場合、その配下にある Word (level 5) のテキストを連結して返します。
     """
-    items = []
     if not tsv_path.exists():
-        return items
+        return []
 
+    all_rows = []
     with open(tsv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter='\t', quoting=csv.QUOTE_NONE)
-        for row in reader:
-            # 指定されたレベルと一致する場合のみ抽出
-            if row.get('level') == str(target_level):
-                text = row.get('text', '').strip()
-                # ページやブロックなどの上位レベルではtextが空でも座標が必要な場合があるが、
-                # 基本的にテキストがあるもの、または上位構造として追加
-                try:
-                    items.append({
-                        "text": text,
-                        "confidence": int(float(row.get('conf', 0))),
-                        "bbox": {
-                            "left": int(row.get('left', 0)),
-                            "top": int(row.get('top', 0)),
-                            "width": int(row.get('width', 0)),
-                            "height": int(row.get('height', 0))
-                        }
-                    })
-                except (ValueError, TypeError):
-                    continue
+        all_rows = list(reader)
+
+    items = []
+    for i, row in enumerate(all_rows):
+        # 指定されたレベルの行を見つけたら
+        if row.get('level') == str(target_level):
+            try:
+                item = {
+                    "text": "",
+                    "confidence": int(float(row.get('conf', 0))),
+                    "bbox": {
+                        "left": int(row.get('left', 0)),
+                        "top": int(row.get('top', 0)),
+                        "width": int(row.get('width', 0)),
+                        "height": int(row.get('height', 0))
+                    }
+                }
+
+                # もし target_level が Word (5) ならそのまま text を使用
+                if target_level == 5:
+                    item["text"] = row.get('text', '').strip()
+                else:
+                    # target_level が 1-4 の場合、次の target_level の行が出てくるまでの間にある
+                    # level 5 (Word) のテキストをすべて連結する
+                    words_in_item = []
+                    confidences = []
+                    
+                    for j in range(i + 1, len(all_rows)):
+                        next_row = all_rows[j]
+                        # 同じレベルか、より上位のレベルの行が出てきたら終了
+                        if int(next_row.get('level', 0)) <= target_level:
+                            break
+                        
+                        # Word レベルのテキストを収集
+                        if next_row.get('level') == '5':
+                            w_text = next_row.get('text', '').strip()
+                            if w_text:
+                                words_in_item.append(w_text)
+                                conf_val = int(float(next_row.get('conf', 0)))
+                                if conf_val >= 0: # -1 は無視
+                                    confidences.append(conf_val)
+                    
+                    item["text"] = "".join(words_in_item) # 日本語なのでスペースなしで結合
+                    if confidences:
+                        item["confidence"] = int(sum(confidences) / len(confidences))
+                
+                # テキストがある場合、または Page/Block 等で領域として意味がある場合に追加
+                if item["text"] or target_level < 4:
+                    items.append(item)
+                    
+            except (ValueError, TypeError):
+                continue
     return items
 
 # --- 4. バックグラウンドで行う重い処理（OCR本体） ---
